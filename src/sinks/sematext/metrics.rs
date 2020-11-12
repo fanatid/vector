@@ -78,28 +78,33 @@ async fn healthcheck(endpoint: String, mut client: HttpClient) -> Result<()> {
 const ENDPOINT: &str = "https://spm-receiver.sematext.com";
 const EU_ENDPOINT: &str = "https://spm-receiver.eu.sematext.com";
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "sematext_metrics")]
 impl SinkConfig for SematextMetricsConfig {
-    async fn build(&self, cx: SinkContext) -> Result<(VectorSink, Healthcheck)> {
-        let client = HttpClient::new(None)?;
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let client = HttpClient::new(None)?;
 
-        let endpoint = match (&self.endpoint, &self.region) {
-            (Some(endpoint), None) => endpoint.clone(),
-            (None, Some(Region::Us)) => ENDPOINT.to_owned(),
-            (None, Some(Region::Eu)) => EU_ENDPOINT.to_owned(),
-            (None, None) => {
-                return Err("Either `region` or `endpoint` must be set.".into());
-            }
-            (Some(_), Some(_)) => {
-                return Err("Only one of `region` and `endpoint` can be set.".into());
-            }
-        };
+            let endpoint = match (&this.endpoint, &this.region) {
+                (Some(endpoint), None) => endpoint.clone(),
+                (None, Some(Region::Us)) => ENDPOINT.to_owned(),
+                (None, Some(Region::Eu)) => EU_ENDPOINT.to_owned(),
+                (None, None) => {
+                    return Err("Either `region` or `endpoint` must be set.".into());
+                }
+                (Some(_), Some(_)) => {
+                    return Err("Only one of `region` and `endpoint` can be set.".into());
+                }
+            };
 
-        let healthcheck = healthcheck(endpoint.clone(), client.clone()).boxed();
-        let sink = SematextMetricsService::new(self.clone(), write_uri(&endpoint)?, cx, client)?;
+            let healthcheck = healthcheck(endpoint.clone(), client.clone()).boxed();
+            let sink = SematextMetricsService::new(this, write_uri(&endpoint)?, cx, client)?;
 
-        Ok((sink, healthcheck))
+            Ok((sink, healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

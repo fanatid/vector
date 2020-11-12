@@ -7,7 +7,7 @@ use crate::{
         BatchConfig, BatchSettings, BoxedRawValue, JsonArrayBuffer, TowerRequestConfig, UriSerde,
     },
 };
-use futures::{FutureExt, SinkExt};
+use futures::{future::BoxFuture, FutureExt, SinkExt};
 use http::{Request, StatusCode, Uri};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -45,34 +45,36 @@ impl GenerateConfig for HoneycombConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "honeycomb")]
 impl SinkConfig for HoneycombConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        let request_settings = self.request.unwrap_with(&TowerRequestConfig::default());
-        let batch_settings = BatchSettings::default()
-            .bytes(bytesize::kib(100u64))
-            .timeout(1)
-            .parse_config(self.batch)?;
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let request_settings = this.request.unwrap_with(&TowerRequestConfig::default());
+            let batch_settings = BatchSettings::default()
+                .bytes(bytesize::kib(100u64))
+                .timeout(1)
+                .parse_config(this.batch)?;
 
-        let client = HttpClient::new(None)?;
+            let client = HttpClient::new(None)?;
 
-        let sink = BatchedHttpSink::new(
-            self.clone(),
-            JsonArrayBuffer::new(batch_settings.size),
-            request_settings,
-            batch_settings.timeout,
-            client.clone(),
-            cx.acker(),
-        )
-        .sink_map_err(|error| error!(message = "Fatal honeycomb sink error.", %error));
+            let sink = BatchedHttpSink::new(
+                this.clone(),
+                JsonArrayBuffer::new(batch_settings.size),
+                request_settings,
+                batch_settings.timeout,
+                client.clone(),
+                cx.acker(),
+            )
+            .sink_map_err(|error| error!(message = "Fatal honeycomb sink error.", %error));
 
-        let healthcheck = healthcheck(self.clone(), client).boxed();
+            let healthcheck = healthcheck(this, client).boxed();
 
-        Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+            Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

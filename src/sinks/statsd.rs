@@ -12,7 +12,10 @@ use crate::{
     },
     Event,
 };
-use futures::{future, stream, FutureExt, SinkExt, StreamExt, TryFutureExt};
+use futures::{
+    future::{self, BoxFuture},
+    stream, FutureExt, SinkExt, StreamExt, TryFutureExt,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -76,53 +79,57 @@ impl GenerateConfig for StatsdSinkConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "statsd")]
 impl SinkConfig for StatsdSinkConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        let default_namespace = self.default_namespace.clone();
-        match &self.mode {
-            Mode::Tcp(config) => {
-                let encode_event =
-                    move |event| encode_event(event, default_namespace.as_deref()).map(Into::into);
-                config.build(cx, encode_event)
-            }
-            Mode::Udp(config) => {
-                // 1432 bytes is a recommended packet size to fit into MTU
-                // https://github.com/statsd/statsd/blob/master/docs/metric_types.md#multi-metric-packets
-                // However we need to leave some space for +1 extra trailing event in the buffer.
-                // Also one might keep an eye on server side limitations, like
-                // mentioned here https://github.com/DataDog/dd-agent/issues/2638
-                let batch = BatchSettings::default()
-                    .bytes(1300)
-                    .events(1000)
-                    .timeout(1)
-                    .parse_config(config.batch)?;
-                let (service, healthcheck) = config.udp.build_service(cx.clone())?;
-                let service = StatsdSvc { inner: service };
-                let sink = BatchSink::new(
-                    ServiceBuilder::new().service(service),
-                    Buffer::new(batch.size, Compression::None),
-                    batch.timeout,
-                    cx.acker(),
-                )
-                .sink_map_err(|error| error!(message = "Fatal statsd sink error.", %error))
-                .with_flat_map(move |event| {
-                    stream::iter(encode_event(event, default_namespace.as_deref())).map(Ok)
-                });
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let default_namespace = this.default_namespace.clone();
+            match &this.mode {
+                Mode::Tcp(config) => {
+                    let encode_event = move |event| {
+                        encode_event(event, default_namespace.as_deref()).map(Into::into)
+                    };
+                    config.build(cx, encode_event)
+                }
+                Mode::Udp(config) => {
+                    // 1432 bytes is a recommended packet size to fit into MTU
+                    // https://github.com/statsd/statsd/blob/master/docs/metric_types.md#multi-metric-packets
+                    // However we need to leave some space for +1 extra trailing event in the buffer.
+                    // Also one might keep an eye on server side limitations, like
+                    // mentioned here https://github.com/DataDog/dd-agent/issues/2638
+                    let batch = BatchSettings::default()
+                        .bytes(1300)
+                        .events(1000)
+                        .timeout(1)
+                        .parse_config(config.batch)?;
+                    let (service, healthcheck) = config.udp.build_service(cx.clone())?;
+                    let service = StatsdSvc { inner: service };
+                    let sink = BatchSink::new(
+                        ServiceBuilder::new().service(service),
+                        Buffer::new(batch.size, Compression::None),
+                        batch.timeout,
+                        cx.acker(),
+                    )
+                    .sink_map_err(|error| error!(message = "Fatal statsd sink error.", %error))
+                    .with_flat_map(move |event| {
+                        stream::iter(encode_event(event, default_namespace.as_deref())).map(Ok)
+                    });
 
-                Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+                    Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+                }
+                #[cfg(unix)]
+                Mode::Unix(config) => {
+                    let encode_event = move |event| {
+                        encode_event(event, default_namespace.as_deref()).map(Into::into)
+                    };
+                    config.build(cx, encode_event)
+                }
             }
-            #[cfg(unix)]
-            Mode::Unix(config) => {
-                let encode_event =
-                    move |event| encode_event(event, default_namespace.as_deref()).map(Into::into);
-                config.build(cx, encode_event)
-            }
-        }
+        })
     }
 
     fn input_type(&self) -> DataType {

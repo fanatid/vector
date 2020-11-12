@@ -2,7 +2,11 @@
 #![cfg(all(feature = "sources-socket", feature = "sinks-socket"))]
 
 use async_trait::async_trait;
-use futures::{compat::Future01CompatExt, future, FutureExt, Sink};
+use futures::{
+    compat::Future01CompatExt,
+    future::{self, BoxFuture},
+    FutureExt, Sink,
+};
 use futures01::Stream;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -24,14 +28,18 @@ use vector::{
 #[derive(Debug, Serialize, Deserialize)]
 struct PanicSink;
 
-#[async_trait]
 #[typetag::serde(name = "panic")]
 impl SinkConfig for PanicSink {
-    async fn build(&self, _cx: SinkContext) -> Result<(VectorSink, Healthcheck), vector::Error> {
-        Ok((
-            VectorSink::Sink(Box::new(PanicSink)),
-            future::ok(()).boxed(),
-        ))
+    fn build(
+        &self,
+        _cx: SinkContext,
+    ) -> BoxFuture<'static, Result<(VectorSink, Healthcheck), vector::Error>> {
+        Box::pin(async move {
+            Ok((
+                VectorSink::Sink(Box::new(PanicSink)),
+                future::ok(()).boxed(),
+            ))
+        })
     }
 
     fn input_type(&self) -> config::DataType {
@@ -110,14 +118,18 @@ async fn test_sink_panic() {
 #[derive(Debug, Serialize, Deserialize)]
 struct ErrorSink;
 
-#[async_trait]
 #[typetag::serde(name = "panic")]
 impl SinkConfig for ErrorSink {
-    async fn build(&self, _cx: SinkContext) -> Result<(VectorSink, Healthcheck), vector::Error> {
-        Ok((
-            VectorSink::Sink(Box::new(ErrorSink)),
-            future::ok(()).boxed(),
-        ))
+    fn build(
+        &self,
+        _cx: SinkContext,
+    ) -> BoxFuture<'static, Result<(VectorSink, Healthcheck), vector::Error>> {
+        Box::pin(async move {
+            Ok((
+                VectorSink::Sink(Box::new(ErrorSink)),
+                future::ok(()).boxed(),
+            ))
+        })
     }
 
     fn input_type(&self) -> config::DataType {

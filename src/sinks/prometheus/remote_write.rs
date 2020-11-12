@@ -57,43 +57,47 @@ lazy_static::lazy_static! {
 
 impl_generate_config_from_default!(RemoteWriteConfig);
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "prometheus_remote_write")]
 impl SinkConfig for RemoteWriteConfig {
-    async fn build(
+    fn build(
         &self,
-        cx: config::SinkContext,
-    ) -> crate::Result<(sinks::VectorSink, sinks::Healthcheck)> {
-        let endpoint = self.endpoint.parse::<Uri>().context(sinks::UriParseError)?;
-        let tls_settings = TlsSettings::from_options(&self.tls)?;
-        let batch = BatchSettings::default()
-            .events(1_000)
-            .timeout(1)
-            .parse_config(self.batch)?;
-        let request = self.request.unwrap_with(&REQUEST_DEFAULTS);
-        let buckets = self.buckets.clone();
-        let quantiles = self.quantiles.clone();
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let endpoint = this.endpoint.parse::<Uri>().context(sinks::UriParseError)?;
+            let tls_settings = TlsSettings::from_options(&this.tls)?;
+            let batch = BatchSettings::default()
+                .events(1_000)
+                .timeout(1)
+                .parse_config(this.batch)?;
+            let request = this.request.unwrap_with(&REQUEST_DEFAULTS);
+            let buckets = this.buckets.clone();
+            let quantiles = this.quantiles.clone();
 
-        let client = HttpClient::new(tls_settings)?;
-        let healthcheck = healthcheck(endpoint.clone(), client.clone()).boxed();
-        let service = RemoteWriteService {
-            endpoint,
-            default_namespace: self.default_namespace.clone(),
-            client,
-            buckets,
-            quantiles,
-        };
-        let sink = request
-            .batch_sink(
-                HttpRetryLogic,
-                service,
-                MetricBuffer::new(batch.size),
-                batch.timeout,
-                cx.acker(),
-            )
-            .sink_map_err(|error| error!(message = "Prometheus remote_write sink error.", %error));
+            let client = HttpClient::new(tls_settings)?;
+            let healthcheck = healthcheck(endpoint.clone(), client.clone()).boxed();
+            let service = RemoteWriteService {
+                endpoint,
+                default_namespace: this.default_namespace.clone(),
+                client,
+                buckets,
+                quantiles,
+            };
+            let sink = request
+                .batch_sink(
+                    HttpRetryLogic,
+                    service,
+                    MetricBuffer::new(batch.size),
+                    batch.timeout,
+                    cx.acker(),
+                )
+                .sink_map_err(
+                    |error| error!(message = "Prometheus remote_write sink error.", %error),
+                );
 
-        Ok((sinks::VectorSink::Sink(Box::new(sink)), healthcheck))
+            Ok((sinks::VectorSink::Sink(Box::new(sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> crate::config::DataType {

@@ -14,7 +14,7 @@ use crate::{
     template::Template,
     tls::{TlsOptions, TlsSettings},
 };
-use futures::{FutureExt, SinkExt};
+use futures::{future::BoxFuture, FutureExt, SinkExt};
 use http::{Request, StatusCode, Uri};
 use hyper::Body;
 use lazy_static::lazy_static;
@@ -84,36 +84,38 @@ inventory::submit! {
 
 impl_generate_config_from_default!(HecSinkConfig);
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "splunk_hec")]
 impl SinkConfig for HecSinkConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        validate_host(&self.endpoint)?;
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            validate_host(&this.endpoint)?;
 
-        let batch = BatchSettings::default()
-            .bytes(bytesize::mib(1u64))
-            .timeout(1)
-            .parse_config(self.batch)?;
-        let request = self.request.unwrap_with(&REQUEST_DEFAULTS);
-        let tls_settings = TlsSettings::from_options(&self.tls)?;
-        let client = HttpClient::new(tls_settings)?;
+            let batch = BatchSettings::default()
+                .bytes(bytesize::mib(1u64))
+                .timeout(1)
+                .parse_config(this.batch)?;
+            let request = this.request.unwrap_with(&REQUEST_DEFAULTS);
+            let tls_settings = TlsSettings::from_options(&this.tls)?;
+            let client = HttpClient::new(tls_settings)?;
 
-        let sink = BatchedHttpSink::new(
-            self.clone(),
-            Buffer::new(batch.size, self.compression),
-            request,
-            batch.timeout,
-            client.clone(),
-            cx.acker(),
-        )
-        .sink_map_err(|error| error!(message = "Fatal splunk_hec sink error.", %error));
+            let sink = BatchedHttpSink::new(
+                this.clone(),
+                Buffer::new(batch.size, this.compression),
+                request,
+                batch.timeout,
+                client.clone(),
+                cx.acker(),
+            )
+            .sink_map_err(|error| error!(message = "Fatal splunk_hec sink error.", %error));
 
-        let healthcheck = healthcheck(self.clone(), client).boxed();
+            let healthcheck = healthcheck(this, client).boxed();
 
-        Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+            Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

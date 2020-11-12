@@ -7,11 +7,12 @@ use crate::{
     Event,
 };
 use bytes::{BufMut, Bytes, BytesMut};
+use futures::future::BoxFuture;
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct VectorSinkConfig {
     pub address: String,
@@ -40,15 +41,17 @@ impl GenerateConfig for VectorSinkConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "vector")]
 impl SinkConfig for VectorSinkConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        let sink_config = TcpSinkConfig::new(self.address.clone(), self.tls.clone());
-        sink_config.build(cx, encode_event)
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let sink_config = TcpSinkConfig::new(this.address, this.tls);
+            sink_config.build(cx, encode_event)
+        })
     }
 
     fn input_type(&self) -> DataType {

@@ -6,8 +6,10 @@
 
 use async_trait::async_trait;
 use futures::{
-    compat::Sink01CompatExt, future, stream::BoxStream, FutureExt, Sink, SinkExt, StreamExt,
-    TryFutureExt,
+    compat::Sink01CompatExt,
+    future::{self, BoxFuture},
+    stream::BoxStream,
+    FutureExt, Sink, SinkExt, StreamExt, TryFutureExt,
 };
 use futures01::{sink::Sink as Sink01, stream, sync::mpsc::Receiver, Async, Future, Stream};
 use serde::{Deserialize, Serialize};
@@ -311,14 +313,16 @@ enum HealthcheckError {
     Unhealthy,
 }
 
-#[async_trait]
 #[typetag::serialize(name = "mock")]
 impl<T> SinkConfig for MockSinkConfig<T>
 where
     T: Sink01<SinkItem = Event> + std::fmt::Debug + Clone + Send + Sync + 'static,
     <T as Sink01>::SinkError: std::fmt::Debug,
 {
-    async fn build(&self, cx: SinkContext) -> Result<(VectorSink, Healthcheck), vector::Error> {
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, Result<(VectorSink, Healthcheck), vector::Error>> {
         let sink = MockSink {
             acker: cx.acker(),
             sink: self.sink.clone().unwrap().sink_compat(),
@@ -330,7 +334,7 @@ where
             future::err(HealthcheckError::Unhealthy.into())
         };
 
-        Ok((VectorSink::Stream(Box::new(sink)), healthcheck.boxed()))
+        Box::pin(async move { Ok((VectorSink::Stream(Box::new(sink)), healthcheck.boxed())) })
     }
 
     fn input_type(&self) -> DataType {

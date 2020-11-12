@@ -8,7 +8,7 @@ use crate::{
     template::Template,
     transforms::metric_to_log::MetricToLogConfig,
 };
-use futures::{stream, SinkExt, StreamExt};
+use futures::{future::BoxFuture, stream, SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -65,32 +65,37 @@ impl GenerateConfig for HumioMetricsConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "humio_metrics")]
 impl SinkConfig for HumioMetricsConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        let mut transform = self.transform.clone().build().await?;
-        let sink = HumioLogsConfig {
-            token: self.token.clone(),
-            endpoint: self.endpoint.clone(),
-            source: self.source.clone(),
-            encoding: self.encoding.clone(),
-            event_type: self.event_type.clone(),
-            host_key: self.host_key.clone(),
-            compression: self.compression,
-            request: self.request,
-            batch: self.batch,
-        };
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let mut transform = this.transform.clone().build().await?;
+            let sink = HumioLogsConfig {
+                token: this.token,
+                endpoint: this.endpoint,
+                source: this.source,
+                encoding: this.encoding,
+                event_type: this.event_type,
+                host_key: this.host_key,
+                compression: this.compression,
+                request: this.request,
+                batch: this.batch,
+            };
 
-        let (sink, healthcheck) = sink.clone().build(cx).await?;
+            let (sink, healthcheck) = sink.clone().build(cx).await?;
 
-        let sink = Box::new(sink.into_sink().with_flat_map(move |e| {
-            let mut buf = Vec::with_capacity(1);
-            transform.as_function().transform(&mut buf, e);
-            stream::iter(buf.into_iter()).map(Ok)
-        }));
+            let sink = Box::new(sink.into_sink().with_flat_map(move |e| {
+                let mut buf = Vec::with_capacity(1);
+                transform.as_function().transform(&mut buf, e);
+                stream::iter(buf.into_iter()).map(Ok)
+            }));
 
-        Ok((VectorSink::Sink(sink), healthcheck))
+            Ok((VectorSink::Sink(sink), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

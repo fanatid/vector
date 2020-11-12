@@ -2,8 +2,8 @@ use crate::{
     buffers::Acker, conditions, event::Metric, shutdown::ShutdownSignal, sinks, sources,
     transforms, Pipeline,
 };
-use async_trait::async_trait;
 use component::ComponentDescription;
+use futures::future::BoxFuture;
 use indexmap::IndexMap; // IndexMap preserves insertion order, allowing us to output errors in the same order they are present in the file
 use serde::{Deserialize, Serialize};
 use snafu::{ResultExt, Snafu};
@@ -147,7 +147,6 @@ macro_rules! impl_generate_config_from_default {
 }
 
 #[async_trait::async_trait]
-#[async_trait]
 #[typetag::serde(tag = "type")]
 pub trait SourceConfig: core::fmt::Debug + Send + Sync {
     async fn build(
@@ -178,13 +177,12 @@ pub struct SinkOuter {
     pub inner: Box<dyn SinkConfig>,
 }
 
-#[async_trait]
 #[typetag::serde(tag = "type")]
 pub trait SinkConfig: core::fmt::Debug + Send + Sync {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(sinks::VectorSink, sinks::Healthcheck)>;
+    ) -> BoxFuture<'static, crate::Result<(sinks::VectorSink, sinks::Healthcheck)>>;
 
     fn input_type(&self) -> DataType;
 
@@ -225,7 +223,7 @@ pub struct TransformOuter {
     pub inner: Box<dyn TransformConfig>,
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 #[typetag::serde(tag = "type")]
 pub trait TransformConfig: core::fmt::Debug + Send + Sync + dyn_clone::DynClone {
     async fn build(&self) -> crate::Result<transforms::Transform>;

@@ -17,7 +17,7 @@ use crate::{
 };
 use bytes::Bytes;
 use flate2::write::GzEncoder;
-use futures::{FutureExt, SinkExt};
+use futures::{future::BoxFuture, FutureExt, SinkExt};
 use http::{Request, StatusCode};
 use hyper::body::Body;
 use serde::{Deserialize, Serialize};
@@ -161,37 +161,38 @@ impl DatadogLogsConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "datadog_logs")]
 impl SinkConfig for DatadogLogsConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        // Create a different sink depending on which encoding we have chosen.
-        // Json and Text have different batching strategies and so each needs to be
-        // handled differently.
-        match self.encoding.codec {
-            Encoding::Json => {
-                let batch_settings = self.batch_settings()?;
-                self.build_sink(
-                    cx,
-                    DatadogLogsJsonService {
-                        config: self.clone(),
-                    },
-                    JsonArrayBuffer::new(batch_settings.size),
-                    batch_settings.timeout,
-                )
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            // Create a different sink depending on which encoding we have chosen.
+            // Json and Text have different batching strategies and so each needs to be
+            // handled differently.
+            match this.encoding.codec {
+                Encoding::Json => {
+                    let batch_settings = this.batch_settings()?;
+                    this.build_sink(
+                        cx,
+                        DatadogLogsJsonService { config: this },
+                        JsonArrayBuffer::new(batch_settings.size),
+                        batch_settings.timeout,
+                    )
+                }
+                Encoding::Text => {
+                    let batch_settings = this.batch_settings()?;
+                    this.build_sink(
+                        cx,
+                        DatadogLogsTextService { config: this },
+                        VecBuffer::new(batch_settings.size),
+                        batch_settings.timeout,
+                    )
+                }
             }
-            Encoding::Text => {
-                let batch_settings = self.batch_settings()?;
-                self.build_sink(
-                    cx,
-                    DatadogLogsTextService {
-                        config: self.clone(),
-                    },
-                    VecBuffer::new(batch_settings.size),
-                    batch_settings.timeout,
-                )
-            }
-        }
+        })
     }
 
     fn input_type(&self) -> DataType {

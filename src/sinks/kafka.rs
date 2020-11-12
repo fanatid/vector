@@ -105,16 +105,18 @@ impl GenerateConfig for KafkaSinkConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "kafka")]
 impl SinkConfig for KafkaSinkConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        let sink = KafkaSink::new(self.clone(), cx.acker())?;
-        let hc = healthcheck(self.clone()).boxed();
-        Ok((super::VectorSink::Sink(Box::new(sink)), hc))
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let sink = KafkaSink::new(this.clone(), cx.acker())?;
+            let hc = healthcheck(this).boxed();
+            Ok((super::VectorSink::Sink(Box::new(sink)), hc))
+        })
     }
 
     fn input_type(&self) -> DataType {

@@ -49,36 +49,41 @@ impl GenerateConfig for SematextLogsConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "sematext_logs")]
 impl SinkConfig for SematextLogsConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        let endpoint = match (&self.endpoint, &self.region) {
-            (Some(host), None) => host.clone(),
-            (None, Some(Region::Us)) => "https://logsene-receiver.sematext.com".to_owned(),
-            (None, Some(Region::Eu)) => "https://logsene-receiver.eu.sematext.com".to_owned(),
-            (None, None) => "https://logsene-receiver.sematext.com".to_owned(),
-            (Some(_), Some(_)) => {
-                return Err("Only one of `region` and `host` can be set.".into());
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let endpoint = match (&this.endpoint, &this.region) {
+                (Some(host), None) => host.clone(),
+                (None, Some(Region::Us)) => "https://logsene-receiver.sematext.com".to_owned(),
+                (None, Some(Region::Eu)) => "https://logsene-receiver.eu.sematext.com".to_owned(),
+                (None, None) => "https://logsene-receiver.sematext.com".to_owned(),
+                (Some(_), Some(_)) => {
+                    return Err("Only one of `region` and `host` can be set.".into());
+                }
+            };
+
+            let (sink, healthcheck) = ElasticSearchConfig {
+                endpoint,
+                compression: Compression::None,
+                doc_type: Some("logs".to_string()),
+                index: Some(this.token.clone()),
+                batch: this.batch,
+                request: this.request,
+                encoding: this.encoding.clone(),
+                ..Default::default()
             }
-        };
+            .build(cx)
+            .await?;
 
-        let (sink, healthcheck) = ElasticSearchConfig {
-            endpoint,
-            compression: Compression::None,
-            doc_type: Some("logs".to_string()),
-            index: Some(self.token.clone()),
-            batch: self.batch,
-            request: self.request,
-            encoding: self.encoding.clone(),
-            ..Default::default()
-        }
-        .build(cx)
-        .await?;
+            let sink = Box::new(sink.into_sink().with(map_timestamp));
 
-        let sink = Box::new(sink.into_sink().with(map_timestamp));
-
-        Ok((VectorSink::Sink(sink), healthcheck))
+            Ok((VectorSink::Sink(sink), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

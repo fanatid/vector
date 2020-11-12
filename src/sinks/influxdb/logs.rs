@@ -17,7 +17,7 @@ use crate::{
     },
     tls::{TlsOptions, TlsSettings},
 };
-use futures::SinkExt;
+use futures::{future::BoxFuture, SinkExt};
 use http::{Request, Uri};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
@@ -89,58 +89,63 @@ impl GenerateConfig for InfluxDBLogsConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "influxdb_logs")]
 impl SinkConfig for InfluxDBLogsConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        // let mut config = self.clone();
-        let mut tags: HashSet<String> = self.tags.clone().into_iter().collect();
-        tags.insert(log_schema().host_key().to_string());
-        tags.insert(log_schema().source_type_key().to_string());
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            // let mut config = self.clone();
+            let mut tags: HashSet<String> = this.tags.clone().into_iter().collect();
+            tags.insert(log_schema().host_key().to_string());
+            tags.insert(log_schema().source_type_key().to_string());
 
-        let tls_settings = TlsSettings::from_options(&self.tls)?;
-        let client = HttpClient::new(tls_settings)?;
-        let healthcheck = self.healthcheck(client.clone())?;
+            let tls_settings = TlsSettings::from_options(&this.tls)?;
+            let client = HttpClient::new(tls_settings)?;
+            let healthcheck = this.healthcheck(client.clone())?;
 
-        let batch = BatchSettings::default()
-            .bytes(bytesize::mib(1u64))
-            .timeout(1)
-            .parse_config(self.batch)?;
-        let request = self.request.unwrap_with(&REQUEST_DEFAULTS);
+            let batch = BatchSettings::default()
+                .bytes(bytesize::mib(1u64))
+                .timeout(1)
+                .parse_config(this.batch)?;
+            let request = this.request.unwrap_with(&REQUEST_DEFAULTS);
 
-        let settings = influxdb_settings(
-            self.influxdb1_settings.clone(),
-            self.influxdb2_settings.clone(),
-        )
-        .unwrap();
+            let settings = influxdb_settings(
+                this.influxdb1_settings.clone(),
+                this.influxdb2_settings.clone(),
+            )
+            .unwrap();
 
-        let endpoint = self.endpoint.clone();
-        let uri = settings.write_uri(endpoint).unwrap();
+            let endpoint = this.endpoint.clone();
+            let uri = settings.write_uri(endpoint).unwrap();
 
-        let token = settings.token();
-        let protocol_version = settings.protocol_version();
-        let namespace = self.namespace.clone();
+            let token = settings.token();
+            let protocol_version = settings.protocol_version();
+            let namespace = this.namespace;
 
-        let sink = InfluxDBLogsSink {
-            uri,
-            token,
-            protocol_version,
-            namespace,
-            tags,
-            encoding: self.encoding.clone().into(),
-        };
+            let sink = InfluxDBLogsSink {
+                uri,
+                token,
+                protocol_version,
+                namespace,
+                tags,
+                encoding: this.encoding.into(),
+            };
 
-        let sink = BatchedHttpSink::new(
-            sink,
-            Buffer::new(batch.size, Compression::None),
-            request,
-            batch.timeout,
-            client,
-            cx.acker(),
-        )
-        .sink_map_err(|error| error!(message = "Fatal influxdb_logs sink error.", %error));
+            let sink = BatchedHttpSink::new(
+                sink,
+                Buffer::new(batch.size, Compression::None),
+                request,
+                batch.timeout,
+                client,
+                cx.acker(),
+            )
+            .sink_map_err(|error| error!(message = "Fatal influxdb_logs sink error.", %error));
 
-        Ok((VectorSink::Sink(Box::new(sink)), healthcheck))
+            Ok((VectorSink::Sink(Box::new(sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

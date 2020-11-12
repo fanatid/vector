@@ -14,7 +14,10 @@ use crate::{
     Event,
 };
 use chrono::{DateTime, Utc};
-use futures::{future, stream, FutureExt, SinkExt, StreamExt};
+use futures::{
+    future::{self, BoxFuture},
+    stream, FutureExt, SinkExt, StreamExt,
+};
 use http::{uri::InvalidUri, Request, StatusCode, Uri};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
@@ -155,47 +158,52 @@ inventory::submit! {
 
 impl_generate_config_from_default!(DatadogConfig);
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "datadog_metrics")]
 impl SinkConfig for DatadogConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        let client = HttpClient::new(None)?;
-        let healthcheck = healthcheck(self.clone(), client.clone()).boxed();
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let client = HttpClient::new(None)?;
+            let healthcheck = healthcheck(this.clone(), client.clone()).boxed();
 
-        let batch = BatchSettings::default()
-            .events(20)
-            .timeout(1)
-            .parse_config(self.batch)?;
-        let request = self.request.unwrap_with(&REQUEST_DEFAULTS);
+            let batch = BatchSettings::default()
+                .events(20)
+                .timeout(1)
+                .parse_config(this.batch)?;
+            let request = this.request.unwrap_with(&REQUEST_DEFAULTS);
 
-        let uri = DatadogEndpoint::build_uri(&self.get_endpoint())?;
-        let timestamp = Utc::now().timestamp();
+            let uri = DatadogEndpoint::build_uri(&this.get_endpoint())?;
+            let timestamp = Utc::now().timestamp();
 
-        let sink = DatadogSink {
-            config: self.clone(),
-            endpoint_data: uri
-                .into_iter()
-                .map(|(endpoint, uri)| (endpoint, (uri, AtomicI64::new(timestamp))))
-                .collect(),
-        };
+            let sink = DatadogSink {
+                config: this,
+                endpoint_data: uri
+                    .into_iter()
+                    .map(|(endpoint, uri)| (endpoint, (uri, AtomicI64::new(timestamp))))
+                    .collect(),
+            };
 
-        let svc = request.service(
-            HttpRetryLogic,
-            HttpBatchService::new(client, move |request| {
-                future::ready(sink.build_request(request))
-            }),
-        );
+            let svc = request.service(
+                HttpRetryLogic,
+                HttpBatchService::new(client, move |request| {
+                    future::ready(sink.build_request(request))
+                }),
+            );
 
-        let buffer = PartitionBuffer::new(MetricBuffer::new(batch.size));
+            let buffer = PartitionBuffer::new(MetricBuffer::new(batch.size));
 
-        let svc_sink = PartitionBatchSink::new(svc, buffer, batch.timeout, cx.acker())
-            .sink_map_err(|error| error!(message = "Fatal datadog metric sink error.", %error))
-            .with_flat_map(move |event: Event| {
-                let ep = DatadogEndpoint::from_metric(&event);
-                stream::iter(Some(PartitionInnerBuffer::new(event, ep))).map(Ok)
-            });
+            let svc_sink = PartitionBatchSink::new(svc, buffer, batch.timeout, cx.acker())
+                .sink_map_err(|error| error!(message = "Fatal datadog metric sink error.", %error))
+                .with_flat_map(move |event: Event| {
+                    let ep = DatadogEndpoint::from_metric(&event);
+                    stream::iter(Some(PartitionInnerBuffer::new(event, ep))).map(Ok)
+                });
 
-        Ok((VectorSink::Sink(Box::new(svc_sink)), healthcheck))
+            Ok((VectorSink::Sink(Box::new(svc_sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

@@ -77,21 +77,25 @@ inventory::submit! {
 
 impl_generate_config_from_default!(InfluxDBConfig);
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "influxdb_metrics")]
 impl SinkConfig for InfluxDBConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        let tls_settings = TlsSettings::from_options(&self.tls)?;
-        let client = HttpClient::new(tls_settings)?;
-        let healthcheck = healthcheck(
-            self.clone().endpoint,
-            self.clone().influxdb1_settings,
-            self.clone().influxdb2_settings,
-            client.clone(),
-        )?;
-        validate_quantiles(&self.quantiles)?;
-        let sink = InfluxDBSvc::new(self.clone(), cx, client)?;
-        Ok((sink, healthcheck))
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        Box::pin(async move {
+            let tls_settings = TlsSettings::from_options(&this.tls)?;
+            let client = HttpClient::new(tls_settings)?;
+            let healthcheck = healthcheck(
+                this.clone().endpoint,
+                this.clone().influxdb1_settings,
+                this.clone().influxdb2_settings,
+                client.clone(),
+            )?;
+            validate_quantiles(&this.quantiles)?;
+            let sink = InfluxDBSvc::new(this, cx, client)?;
+            Ok((sink, healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

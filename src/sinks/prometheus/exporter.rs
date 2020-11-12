@@ -10,7 +10,11 @@ use crate::{
 };
 use async_trait::async_trait;
 use chrono::Utc;
-use futures::{future, stream::BoxStream, FutureExt, StreamExt, TryFutureExt};
+use futures::{
+    future::{self, BoxFuture},
+    stream::BoxStream,
+    FutureExt, StreamExt, TryFutureExt,
+};
 use hyper::{
     header::HeaderValue,
     service::{make_service_fn, service_fn},
@@ -87,22 +91,27 @@ impl GenerateConfig for PrometheusExporterConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "prometheus_exporter")]
 impl SinkConfig for PrometheusExporterConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        if self.flush_period_secs < MIN_FLUSH_PERIOD_SECS {
-            return Err(Box::new(BuildError::FlushPeriodTooShort {
-                min: MIN_FLUSH_PERIOD_SECS,
-            }));
-        }
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            if this.flush_period_secs < MIN_FLUSH_PERIOD_SECS {
+                return Err(Box::new(BuildError::FlushPeriodTooShort {
+                    min: MIN_FLUSH_PERIOD_SECS,
+                }));
+            }
 
-        validate_quantiles(&self.quantiles)?;
+            validate_quantiles(&this.quantiles)?;
 
-        let sink = PrometheusExporter::new(self.clone(), cx.acker());
-        let healthcheck = future::ok(()).boxed();
+            let sink = PrometheusExporter::new(this, cx.acker());
+            let healthcheck = future::ok(()).boxed();
 
-        Ok((VectorSink::Stream(Box::new(sink)), healthcheck))
+            Ok((VectorSink::Stream(Box::new(sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {
@@ -126,11 +135,13 @@ struct PrometheusCompatConfig {
     config: PrometheusExporterConfig,
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "prometheus")]
 impl SinkConfig for PrometheusCompatConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        self.config.build(cx).await
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        self.config.build(cx)
     }
 
     fn input_type(&self) -> DataType {

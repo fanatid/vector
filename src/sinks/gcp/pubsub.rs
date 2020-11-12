@@ -75,33 +75,39 @@ lazy_static::lazy_static! {
     };
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "gcp_pubsub")]
 impl SinkConfig for PubsubConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        let sink = PubsubSink::from_config(self).await?;
-        let batch_settings = BatchSettings::default()
-            .bytes(bytesize::mib(10u64))
-            .events(1000)
-            .timeout(1)
-            .parse_config(self.batch)?;
-        let request_settings = self.request.unwrap_with(&Default::default());
-        let tls_settings = TlsSettings::from_options(&self.tls)?;
-        let client = HttpClient::new(tls_settings)?;
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let sink = PubsubSink::from_config(&this).await?;
+            let batch_settings = BatchSettings::default()
+                .bytes(bytesize::mib(10u64))
+                .events(1000)
+                .timeout(1)
+                .parse_config(this.batch)?;
+            let request_settings = this.request.unwrap_with(&Default::default());
+            let tls_settings = TlsSettings::from_options(&this.tls)?;
+            let client = HttpClient::new(tls_settings)?;
 
-        let healthcheck = healthcheck(client.clone(), sink.uri("")?, sink.creds.clone()).boxed();
+            let healthcheck =
+                healthcheck(client.clone(), sink.uri("")?, sink.creds.clone()).boxed();
 
-        let sink = BatchedHttpSink::new(
-            sink,
-            JsonArrayBuffer::new(batch_settings.size),
-            request_settings,
-            batch_settings.timeout,
-            client,
-            cx.acker(),
-        )
-        .sink_map_err(|error| error!(message = "Fatal gcp_pubsub sink error.", %error));
+            let sink = BatchedHttpSink::new(
+                sink,
+                JsonArrayBuffer::new(batch_settings.size),
+                request_settings,
+                batch_settings.timeout,
+                client,
+                cx.acker(),
+            )
+            .sink_map_err(|error| error!(message = "Fatal gcp_pubsub sink error.", %error));
 
-        Ok((VectorSink::Sink(Box::new(sink)), healthcheck))
+            Ok((VectorSink::Sink(Box::new(sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

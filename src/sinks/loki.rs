@@ -26,7 +26,7 @@ use crate::{
     tls::{TlsOptions, TlsSettings},
 };
 use derivative::Derivative;
-use futures::{FutureExt, SinkExt};
+use futures::{future::BoxFuture, FutureExt, SinkExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -79,39 +79,41 @@ impl GenerateConfig for LokiConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "loki")]
 impl SinkConfig for LokiConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        if self.labels.is_empty() {
-            return Err("`labels` must include at least one label.".into());
-        }
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            if this.labels.is_empty() {
+                return Err("`labels` must include at least one label.".into());
+            }
 
-        let request_settings = self.request.unwrap_with(&TowerRequestConfig::default());
-        let batch_settings = BatchSettings::default()
-            .bytes(102_400)
-            .events(100_000)
-            .timeout(1)
-            .parse_config(self.batch)?;
-        let tls = TlsSettings::from_options(&self.tls)?;
-        let client = HttpClient::new(tls)?;
+            let request_settings = this.request.unwrap_with(&TowerRequestConfig::default());
+            let batch_settings = BatchSettings::default()
+                .bytes(102_400)
+                .events(100_000)
+                .timeout(1)
+                .parse_config(this.batch)?;
+            let tls = TlsSettings::from_options(&this.tls)?;
+            let client = HttpClient::new(tls)?;
 
-        let sink = BatchedHttpSink::new(
-            self.clone(),
-            LokiBuffer::new(batch_settings.size),
-            request_settings,
-            batch_settings.timeout,
-            client.clone(),
-            cx.acker(),
-        )
-        .sink_map_err(|error| error!(message = "Fatal loki sink error.", %error));
+            let sink = BatchedHttpSink::new(
+                this.clone(),
+                LokiBuffer::new(batch_settings.size),
+                request_settings,
+                batch_settings.timeout,
+                client.clone(),
+                cx.acker(),
+            )
+            .sink_map_err(|error| error!(message = "Fatal loki sink error.", %error));
 
-        let healthcheck = healthcheck(self.clone(), client).boxed();
+            let healthcheck = healthcheck(this, client).boxed();
 
-        Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+            Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

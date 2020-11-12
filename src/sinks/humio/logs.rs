@@ -8,6 +8,7 @@ use crate::{
     sinks::{Healthcheck, VectorSink},
     template::Template,
 };
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
 const HOST: &str = "https://cloud.humio.com";
@@ -46,11 +47,13 @@ inventory::submit! {
 
 impl_generate_config_from_default!(HumioLogsConfig);
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "humio_logs")]
 impl SinkConfig for HumioLogsConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        self.build_hec_config().build(cx).await
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        self.build_hec_config().build(cx)
     }
 
     fn input_type(&self) -> DataType {

@@ -18,7 +18,7 @@ use crate::{
 };
 use bytes::Bytes;
 use chrono::Utc;
-use futures::{stream, FutureExt, SinkExt, StreamExt};
+use futures::{future::BoxFuture, stream, FutureExt, SinkExt, StreamExt};
 use http::{StatusCode, Uri};
 use hyper::{
     header::{HeaderName, HeaderValue},
@@ -49,7 +49,7 @@ enum GcsError {
     BucketNotFound { bucket: String },
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct GcsSinkConfig {
     bucket: String,
@@ -155,15 +155,20 @@ impl GenerateConfig for GcsSinkConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "gcp_cloud_storage")]
 impl SinkConfig for GcsSinkConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        let sink = GcsSink::new(self, &cx).await?;
-        let healthcheck = sink.clone().healthcheck().boxed();
-        let service = sink.service(self, &cx)?;
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let sink = GcsSink::new(&this, &cx).await?;
+            let healthcheck = sink.clone().healthcheck().boxed();
+            let service = sink.service(&this, &cx)?;
 
-        Ok((service, healthcheck))
+            Ok((service, healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

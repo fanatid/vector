@@ -60,17 +60,19 @@ inventory::submit! {
 
 impl_generate_config_from_default!(CloudWatchMetricsSinkConfig);
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "aws_cloudwatch_metrics")]
 impl SinkConfig for CloudWatchMetricsSinkConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        let client = self.create_client()?;
-        let healthcheck = self.clone().healthcheck(client.clone()).boxed();
-        let sink = CloudWatchMetricsSvc::new(self.clone(), client, cx)?;
-        Ok((sink, healthcheck))
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let client = this.create_client()?;
+            let healthcheck = this.clone().healthcheck(client.clone()).boxed();
+            let sink = CloudWatchMetricsSvc::new(this, client, cx)?;
+            Ok((sink, healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

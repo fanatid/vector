@@ -7,6 +7,7 @@ use crate::{
     },
     tls::TlsConfig,
 };
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -59,21 +60,21 @@ impl SocketSinkConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "socket")]
 impl SinkConfig for SocketSinkConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
         let encoding = self.encoding.clone();
         let encode_event = move |event| encode_event(event, &encoding);
-        match &self.mode {
+        let result = match &self.mode {
             Mode::Tcp(config) => config.build(cx, encode_event),
             Mode::Udp(config) => config.build(cx, encode_event),
             #[cfg(unix)]
             Mode::Unix(config) => config.build(cx, encode_event),
-        }
+        };
+        Box::pin(async move { result })
     }
 
     fn input_type(&self) -> DataType {

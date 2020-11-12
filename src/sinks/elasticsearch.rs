@@ -15,7 +15,7 @@ use crate::{
     tls::{TlsOptions, TlsSettings},
 };
 use bytes::Bytes;
-use futures::{FutureExt, SinkExt};
+use futures::{future::BoxFuture, FutureExt, SinkExt};
 use http::{
     header::{HeaderName, HeaderValue},
     uri::InvalidUri,
@@ -100,38 +100,40 @@ inventory::submit! {
 
 impl_generate_config_from_default!(ElasticSearchConfig);
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "elasticsearch")]
 impl SinkConfig for ElasticSearchConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        let common = ElasticSearchCommon::parse_config(&self)?;
-        let client = HttpClient::new(common.tls_settings.clone())?;
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let common = ElasticSearchCommon::parse_config(&this)?;
+            let client = HttpClient::new(common.tls_settings.clone())?;
 
-        let healthcheck = healthcheck(client.clone(), common).boxed();
+            let healthcheck = healthcheck(client.clone(), common).boxed();
 
-        let common = ElasticSearchCommon::parse_config(&self)?;
-        let compression = common.compression;
-        let batch = BatchSettings::default()
-            .bytes(bytesize::mib(10u64))
-            .timeout(1)
-            .parse_config(self.batch)?;
-        let request = self.request.unwrap_with(&REQUEST_DEFAULTS);
+            let common = ElasticSearchCommon::parse_config(&this)?;
+            let compression = common.compression;
+            let batch = BatchSettings::default()
+                .bytes(bytesize::mib(10u64))
+                .timeout(1)
+                .parse_config(this.batch)?;
+            let request = this.request.unwrap_with(&REQUEST_DEFAULTS);
 
-        let sink = BatchedHttpSink::with_retry_logic(
-            common,
-            Buffer::new(batch.size, compression),
-            ElasticSearchRetryLogic,
-            request,
-            batch.timeout,
-            client,
-            cx.acker(),
-        )
-        .sink_map_err(|error| error!(message = "Fatal elasticsearch sink error.", %error));
+            let sink = BatchedHttpSink::with_retry_logic(
+                common,
+                Buffer::new(batch.size, compression),
+                ElasticSearchRetryLogic,
+                request,
+                batch.timeout,
+                client,
+                cx.acker(),
+            )
+            .sink_map_err(|error| error!(message = "Fatal elasticsearch sink error.", %error));
 
-        Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+            Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

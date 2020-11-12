@@ -8,6 +8,7 @@ use crate::{
         },
     },
 };
+use futures::future::BoxFuture;
 use http::Uri;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -84,15 +85,17 @@ pub(crate) fn skip_serializing_if_default(e: &EncodingConfigWithDefault<Encoding
     e.codec() == &Encoding::default()
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "new_relic_logs")]
 impl SinkConfig for NewRelicLogsConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        let http_conf = self.create_config()?;
-        http_conf.build(cx).await
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let http_conf = this.create_config()?;
+            http_conf.build(cx).await
+        })
     }
 
     fn input_type(&self) -> DataType {

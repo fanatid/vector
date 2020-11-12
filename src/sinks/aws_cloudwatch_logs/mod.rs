@@ -165,42 +165,45 @@ impl CloudwatchLogsSinkConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "aws_cloudwatch_logs")]
 impl SinkConfig for CloudwatchLogsSinkConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        let batch = BatchSettings::default()
-            .bytes(1_048_576)
-            .events(10_000)
-            .timeout(1)
-            .parse_config(self.batch)?;
-        let request = self.request.unwrap_with(&REQUEST_DEFAULTS);
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let batch = BatchSettings::default()
+                .bytes(1_048_576)
+                .events(10_000)
+                .timeout(1)
+                .parse_config(this.batch)?;
+            let request = this.request.unwrap_with(&REQUEST_DEFAULTS);
 
-        let log_group = self.group_name.clone();
-        let log_stream = self.stream_name.clone();
+            let log_group = this.group_name.clone();
+            let log_stream = this.stream_name.clone();
 
-        let client = self.create_client()?;
-        let svc = ServiceBuilder::new()
-            .concurrency_limit(request.in_flight_limit.unwrap())
-            .service(CloudwatchLogsPartitionSvc::new(
-                self.clone(),
-                client.clone(),
-            ));
+            let client = this.create_client()?;
+            let svc = ServiceBuilder::new()
+                .concurrency_limit(request.in_flight_limit.unwrap())
+                .service(CloudwatchLogsPartitionSvc::new(
+                    this.clone(),
+                    client.clone(),
+                ));
 
-        let encoding = self.encoding.clone();
-        let buffer = PartitionBuffer::new(VecBuffer::new(batch.size));
-        let sink = PartitionBatchSink::new(svc, buffer, batch.timeout, cx.acker())
-            .sink_map_err(|error| error!(message = "Fatal cloudwatchlogs sink error.", %error))
-            .with_flat_map(move |event| {
-                stream::iter(partition_encode(event, &encoding, &log_group, &log_stream)).map(Ok)
-            });
+            let encoding = this.encoding.clone();
+            let buffer = PartitionBuffer::new(VecBuffer::new(batch.size));
+            let sink = PartitionBatchSink::new(svc, buffer, batch.timeout, cx.acker())
+                .sink_map_err(|error| error!(message = "Fatal cloudwatchlogs sink error.", %error))
+                .with_flat_map(move |event| {
+                    stream::iter(partition_encode(event, &encoding, &log_group, &log_stream))
+                        .map(Ok)
+                });
 
-        let healthcheck = healthcheck(self.clone(), client).boxed();
+            let healthcheck = healthcheck(this, client).boxed();
 
-        Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+            Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

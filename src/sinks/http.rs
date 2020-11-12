@@ -10,7 +10,10 @@ use crate::{
     },
     tls::{TlsOptions, TlsSettings},
 };
-use futures::{future, FutureExt, SinkExt};
+use futures::{
+    future::{self, BoxFuture},
+    FutureExt, SinkExt,
+};
 use http::{
     header::{self, HeaderName, HeaderValue},
     Method, Request, StatusCode, Uri,
@@ -109,46 +112,48 @@ impl GenerateConfig for HttpSinkConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "http")]
 impl SinkConfig for HttpSinkConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        validate_headers(&self.headers, &self.auth)?;
-        let tls = TlsSettings::from_options(&self.tls)?;
-        let client = HttpClient::new(tls)?;
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            validate_headers(&this.headers, &this.auth)?;
+            let tls = TlsSettings::from_options(&this.tls)?;
+            let client = HttpClient::new(tls)?;
 
-        let mut config = self.clone();
-        config.uri = build_uri(config.uri.clone()).into();
+            let mut config = this.clone();
+            config.uri = build_uri(config.uri.clone()).into();
 
-        let compression = config.compression;
-        let batch = BatchSettings::default()
-            .bytes(bytesize::mib(10u64))
-            .timeout(1)
-            .parse_config(config.batch)?;
-        let request = config.request.unwrap_with(&REQUEST_DEFAULTS);
+            let compression = config.compression;
+            let batch = BatchSettings::default()
+                .bytes(bytesize::mib(10u64))
+                .timeout(1)
+                .parse_config(config.batch)?;
+            let request = config.request.unwrap_with(&REQUEST_DEFAULTS);
 
-        let sink = BatchedHttpSink::new(
-            config,
-            Buffer::new(batch.size, compression),
-            request,
-            batch.timeout,
-            client.clone(),
-            cx.acker(),
-        )
-        .sink_map_err(|error| error!(message = "Fatal HTTP sink error.", %error));
+            let sink = BatchedHttpSink::new(
+                config,
+                Buffer::new(batch.size, compression),
+                request,
+                batch.timeout,
+                client.clone(),
+                cx.acker(),
+            )
+            .sink_map_err(|error| error!(message = "Fatal HTTP sink error.", %error));
 
-        let sink = super::VectorSink::Sink(Box::new(sink));
+            let sink = super::VectorSink::Sink(Box::new(sink));
 
-        match self.healthcheck_uri.clone() {
-            Some(healthcheck_uri) => {
-                let healthcheck = healthcheck(healthcheck_uri, self.auth.clone(), client).boxed();
-                Ok((sink, healthcheck))
+            match this.healthcheck_uri {
+                Some(healthcheck_uri) => {
+                    let healthcheck = healthcheck(healthcheck_uri, this.auth, client).boxed();
+                    Ok((sink, healthcheck))
+                }
+                None => Ok((sink, future::ok(()).boxed())),
             }
-            None => Ok((sink, future::ok(()).boxed())),
-        }
+        })
     }
 
     fn input_type(&self) -> DataType {

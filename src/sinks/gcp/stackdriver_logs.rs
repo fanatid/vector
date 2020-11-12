@@ -13,7 +13,7 @@ use crate::{
     },
     tls::{TlsOptions, TlsSettings},
 };
-use futures::{FutureExt, SinkExt};
+use futures::{future::BoxFuture, FutureExt, SinkExt};
 use http::{Request, Uri};
 use hyper::Body;
 use lazy_static::lazy_static;
@@ -108,39 +108,47 @@ lazy_static! {
         .unwrap();
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "gcp_stackdriver_logs")]
 impl SinkConfig for StackdriverConfig {
-    async fn build(&self, cx: SinkContext) -> crate::Result<(VectorSink, Healthcheck)> {
-        let creds = self.auth.make_credentials(Scope::LoggingWrite).await?;
+    fn build(
+        &self,
+        cx: SinkContext,
+    ) -> BoxFuture<'static, crate::Result<(VectorSink, Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let creds = this.auth.make_credentials(Scope::LoggingWrite).await?;
 
-        let batch = BatchSettings::default()
-            .bytes(bytesize::kib(5000u64))
-            .timeout(1)
-            .parse_config(self.batch)?;
-        let request = self.request.unwrap_with(&REQUEST_DEFAULTS);
-        let tls_settings = TlsSettings::from_options(&self.tls)?;
-        let client = HttpClient::new(tls_settings)?;
+            let batch = BatchSettings::default()
+                .bytes(bytesize::kib(5000u64))
+                .timeout(1)
+                .parse_config(this.batch)?;
+            let request = this.request.unwrap_with(&REQUEST_DEFAULTS);
+            let tls_settings = TlsSettings::from_options(&this.tls)?;
+            let client = HttpClient::new(tls_settings)?;
 
-        let sink = StackdriverSink {
-            config: self.clone(),
-            creds,
-            severity_key: self.severity_key.clone(),
-        };
+            let severity_key = this.severity_key.clone();
+            let sink = StackdriverSink {
+                config: this,
+                creds,
+                severity_key,
+            };
 
-        let healthcheck = healthcheck(client.clone(), sink.clone()).boxed();
+            let healthcheck = healthcheck(client.clone(), sink.clone()).boxed();
 
-        let sink = BatchedHttpSink::new(
-            sink,
-            JsonArrayBuffer::new(batch.size),
-            request,
-            batch.timeout,
-            client,
-            cx.acker(),
-        )
-        .sink_map_err(|error| error!(message = "Fatal gcp_stackdriver_logs sink error.", %error));
+            let sink = BatchedHttpSink::new(
+                sink,
+                JsonArrayBuffer::new(batch.size),
+                request,
+                batch.timeout,
+                client,
+                cx.acker(),
+            )
+            .sink_map_err(
+                |error| error!(message = "Fatal gcp_stackdriver_logs sink error.", %error),
+            );
 
-        Ok((VectorSink::Sink(Box::new(sink)), healthcheck))
+            Ok((VectorSink::Sink(Box::new(sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

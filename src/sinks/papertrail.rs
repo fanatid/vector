@@ -9,11 +9,11 @@ use crate::{
     Event,
 };
 use bytes::Bytes;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-
 use syslog::{Facility, Formatter3164, LogFormat, Severity};
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PapertrailConfig {
     endpoint: UriSerde,
@@ -35,31 +35,33 @@ impl GenerateConfig for PapertrailConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "papertrail")]
 impl SinkConfig for PapertrailConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        let host = self
-            .endpoint
-            .host()
-            .map(str::to_string)
-            .ok_or_else(|| "A host is required for endpoint".to_string())?;
-        let port = self
-            .endpoint
-            .port_u16()
-            .ok_or_else(|| "A port is required for endpoint".to_string())?;
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this: PapertrailConfig = self.clone();
+        Box::pin(async move {
+            let host = this
+                .endpoint
+                .host()
+                .map(str::to_string)
+                .ok_or_else(|| "A host is required for endpoint".to_string())?;
+            let port = this
+                .endpoint
+                .port_u16()
+                .ok_or_else(|| "A port is required for endpoint".to_string())?;
 
-        let address = format!("{}:{}", host, port);
-        let tls = Some(self.tls.clone().unwrap_or_else(TlsConfig::enabled));
+            let address = format!("{}:{}", host, port);
+            let tls = Some(this.tls.unwrap_or_else(TlsConfig::enabled));
 
-        let pid = std::process::id();
-        let encoding = self.encoding.clone();
+            let pid = std::process::id();
+            let encoding = this.encoding;
 
-        let sink_config = TcpSinkConfig::new(address, tls);
-        sink_config.build(cx, move |event| encode_event(event, pid, &encoding))
+            let sink_config = TcpSinkConfig::new(address, tls);
+            sink_config.build(cx, move |event| encode_event(event, pid, &encoding))
+        })
     }
 
     fn input_type(&self) -> DataType {

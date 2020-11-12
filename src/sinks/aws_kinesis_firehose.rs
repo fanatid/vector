@@ -78,17 +78,19 @@ impl GenerateConfig for KinesisFirehoseSinkConfig {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "aws_kinesis_firehose")]
 impl SinkConfig for KinesisFirehoseSinkConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        let client = self.create_client()?;
-        let healthcheck = self.clone().healthcheck(client.clone()).boxed();
-        let sink = KinesisFirehoseService::new(self.clone(), client, cx)?;
-        Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let client = this.create_client()?;
+            let healthcheck = this.clone().healthcheck(client.clone()).boxed();
+            let sink = KinesisFirehoseService::new(this, client, cx)?;
+            Ok((super::VectorSink::Sink(Box::new(sink)), healthcheck))
+        })
     }
 
     fn input_type(&self) -> DataType {

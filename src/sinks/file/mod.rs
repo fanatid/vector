@@ -13,7 +13,7 @@ use async_compression::tokio_02::write::GzipEncoder;
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{
-    future,
+    future::{self, BoxFuture},
     stream::{BoxStream, StreamExt},
     FutureExt,
 };
@@ -28,7 +28,7 @@ mod bytes_path;
 use bytes_path::BytesPath;
 use std::convert::TryFrom;
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct FileSinkConfig {
     pub path: Template,
@@ -129,18 +129,20 @@ impl OutFile {
     }
 }
 
-#[async_trait::async_trait]
 #[typetag::serde(name = "file")]
 impl SinkConfig for FileSinkConfig {
-    async fn build(
+    fn build(
         &self,
         cx: SinkContext,
-    ) -> crate::Result<(super::VectorSink, super::Healthcheck)> {
-        let sink = FileSink::new(&self, cx.acker());
-        Ok((
-            super::VectorSink::Stream(Box::new(sink)),
-            future::ok(()).boxed(),
-        ))
+    ) -> BoxFuture<'static, crate::Result<(super::VectorSink, super::Healthcheck)>> {
+        let this = self.clone();
+        Box::pin(async move {
+            let sink = FileSink::new(&this, cx.acker());
+            Ok((
+                super::VectorSink::Stream(Box::new(sink)),
+                future::ok(()).boxed(),
+            ))
+        })
     }
 
     fn input_type(&self) -> DataType {
