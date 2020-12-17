@@ -30,7 +30,7 @@ jobs:
           access_token: ${{ secrets.GITHUB_TOKEN }}
 
   changes:
-      runs-on: ubuntu-latest
+      runs-on: [self-hosted, ubuntu-latest]
       # Set job outputs to values from filter step
       outputs:
         source: ${{ steps.filter.outputs.source }}
@@ -102,7 +102,7 @@ jobs:
 
   test-misc:
     name: Miscellaneous - Linux
-    runs-on: ubuntu-20.04
+    runs-on: [self-hosted, ubuntu-20.04]
     needs: changes
     if: ${{ needs.changes.outputs.source == 'true' }}
     steps:
@@ -124,7 +124,7 @@ jobs:
 
   cross-linux:
     name: Cross - ${{ matrix.target }}
-    runs-on: ubuntu-20.04
+    runs-on: [self-hosted, ubuntu-20.04]
     needs: changes
     strategy:
       matrix:
@@ -200,7 +200,7 @@ jobs:
     name: Component Features - Linux
     needs: changes
     if: ${{ needs.changes.outputs.source == 'true' }}
-    runs-on: ubuntu-20.04
+    runs-on: [self-hosted, ubuntu-20.04]
     container: timberio/ci_image
     steps:
       - uses: actions/checkout@v2
@@ -213,7 +213,7 @@ jobs:
 
   checks:
     name: Checks
-    runs-on: ubuntu-20.04
+    runs-on: [self-hosted, ubuntu-20.04]
     container: timberio/ci_image
     needs: changes
     steps:
@@ -283,7 +283,7 @@ jobs:
       - test-windows
       - check-component-features
       - checks
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ubuntu-latest]
     steps:
     - name: Discord notification
       env:
